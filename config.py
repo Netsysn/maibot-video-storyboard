@@ -437,6 +437,32 @@ class ShareSection(PluginConfigBase):
         json_schema_extra={"label": "简介字数", "order": 4},
     )
 
+    watch_before_share: bool = Field(
+        default=True,
+        description="转发前先调一次视频分镜真看一遍，再让她用自己的话写卡片（关掉就只按标题简介瞎讲）",
+        json_schema_extra={"label": "先看再转", "order": 5},
+    )
+
+    caption_task: str = Field(
+        default="utils",
+        description="写卡片文案用的模型任务名",
+        json_schema_extra={"label": "文案任务", "order": 6},
+    )
+
+    caption_model: str = Field(
+        default="",
+        description="写卡片文案指定模型名，留空用任务默认",
+        json_schema_extra={"label": "文案模型", "order": 7},
+    )
+
+    caption_max_chars: int = Field(
+        default=140,
+        ge=40,
+        le=400,
+        description="卡片文案字数上限",
+        json_schema_extra={"label": "文案字数", "order": 8},
+    )
+
 
 class CacheSection(PluginConfigBase):
     """同一个视频不重复看"""

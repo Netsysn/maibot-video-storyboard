@@ -34,7 +34,7 @@ _SUSPECT_WORDS = (
     "睡", "床照", "湿身", "真空", "巨乳", "爆乳", "下衣失踪", "腿照", "泳装",
 )
 
-PLUGIN_VERSION = "1.6.0"
+PLUGIN_VERSION = "1.7.0"
 
 
 class VideoStoryboardPlugin(MaiBotPlugin):
@@ -270,14 +270,19 @@ class VideoStoryboardPlugin(MaiBotPlugin):
             return {"success": False, "content": "这条视频的信息拿不到，可能删了或者被限流"}
 
         cfg = self.config.share
-        head = f"为什么转这个：{reason.strip()[:60]}" if reason.strip() else f"转个视频：{info['title'][:40]}"
-        title = info['title']
-        shown = title if ('《' in title or '「' in title) else f"《{title}》"
-        lines = [head, f"UP 主：{info['author'] or '未知'}", shown]
-        if cfg.max_desc_chars > 0 and info.get("desc"):
-            lines.append(info["desc"][: cfg.max_desc_chars].rstrip("，,。. ") + "…" if len(info["desc"]) > cfg.max_desc_chars else info["desc"])
-        lines.append(info["url"])
-        caption = "\n".join(lines)
+        storyboard = ""
+        if cfg.watch_before_share and self._processor is not None:
+            try:
+                storyboard = await self._processor.describe_url(info["url"])
+            except Exception as exc:  # noqa: BLE001
+                self.ctx.logger.warning("转发前看片失败（%s）：%s", bvid, str(exc)[:80])
+        if storyboard:
+            self.ctx.logger.info("转发前先看了：%s（%d 字）", bvid, len(storyboard))
+
+        body = await self._compose_caption(info, storyboard, reason)
+        title = info["title"]
+        shown = title if ("《" in title or "「" in title) else f"《{title}》"
+        caption = f"{body}\n{shown}\n{info['url']}"
 
         image_b64 = ""
         if info.get("cover"):
@@ -321,6 +326,57 @@ class VideoStoryboardPlugin(MaiBotPlugin):
             "success": True,
             "content": f"转过去了：{info['title']}（{bvid}）" + ("" if sent_image else "，封面没过审就没发图"),
         }
+
+    async def _compose_caption(self, info: dict[str, Any], storyboard: str, reason: str) -> str:
+        """用自己的口气写卡片正文：不套模板标签，看过片就按看的写。"""
+
+        cfg = self.config.share
+        desc = (info.get("desc") or "")[:200]
+        lines = [
+            f"标题：{info['title']}",
+            f"UP 主：{info.get('author') or '未知'}",
+        ]
+        if desc:
+            lines.append(f"简介：{desc}")
+        if reason.strip():
+            lines.append(f"你挑它的理由：{reason.strip()[:80]}")
+        if storyboard:
+            lines.append(f"你看完的分镜描述：{storyboard[:1200]}")
+        else:
+            lines.append("（你没看成分镜，只能按标题和简介说，别装作看过）")
+
+        prompt: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "你在聊天里给朋友转一个视频。用你平时的口气写两三句话（不超过"
+                    f"{cfg.caption_max_chars} 字），说清这是什么、你为什么想转给他。"
+                    "看过分镜就按看到的画面讲，可以点一个具体细节；没看成就别装看过。"
+                    "禁止：写「为什么转这个」「UP 主」「标题」这类标签，禁止分点列举，禁止复述整段剧情，"
+                    "禁止「这是一段…的视频」这种报告腔。直接说话，不加开场白。"
+                ),
+            },
+            {"role": "user", "content": "\n".join(lines)},
+        ]
+        call_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "temperature": 0.8,
+            "max_tokens": 400,
+        }
+        if cfg.caption_task:
+            call_kwargs["task_name"] = cfg.caption_task
+        if cfg.caption_model:
+            call_kwargs["model_name"] = cfg.caption_model
+        try:
+            result = await self.ctx.llm.generate(**call_kwargs)
+            text = str((result or {}).get("response") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            self.ctx.logger.warning("卡片文案生成失败，用兜底写法：%s", str(exc)[:60])
+            text = ""
+        if not text:
+            text = f"这个挺乐的，你看看" if not storyboard else storyboard[: cfg.caption_max_chars]
+        text = text.strip().strip('"“”')
+        return text[: cfg.caption_max_chars]
 
     async def _prepare_cover(self, url: str, *, max_edge: int) -> bytes:
         """下封面并缩到合理尺寸，返回 JPEG 字节；失败给空。"""
