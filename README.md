@@ -1,6 +1,6 @@
 # 视频分镜 · Video Storyboard for MaiBot
 
-![version](https://img.shields.io/badge/version-1.4.0-blue)
+![version](https://img.shields.io/badge/version-1.5.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![host](https://img.shields.io/badge/MaiBot-1.3.5%20~%202.0.0-orange)
 ![python](https://img.shields.io/badge/python-3.10%2B-3776AB)
@@ -95,7 +95,11 @@ MaiBot 本身没有 Video 消息组件，适配器把视频段降级成一行文
 | --- | --- | --- |
 | Hook | `chat.receive.before_process` | `mode=BLOCKING`、`order=EARLY`、`timeout_ms=90000`；返回 `{"action": "continue", "modified_kwargs": {"message": …}}` |
 | Tool | `video_storyboard(url)` | `visibility="deferred"`：不进首屏工具表，靠 `tool_search` 唤起（避免撑大每轮提示词） |
+| Tool | `bili_search(keyword, limit=5)` | 按关键词搜 B 站，返回标题、时长、播放量、UP 主与链接；空结果自动重试一次（匿名搜索偶发 `-412`） |
+| Tool | `bili_share(target)` | 把视频以「封面图 + 标题/时长/UP/链接」发到当前会话；`target` 可以是 BV 号、链接或关键词 |
 | Command | `/看视频 <链接>`（别名 `/看片`、`/video`） | 手动触发，直接回一句摘要 |
+
+三个工具都标了 `visibility="deferred"`，需要模型用 `tool_search` 自己找出来——这是有意的：它们的描述较长，常驻会挤占每轮上下文。如果你的宿主版本不支持 deferred，把 `visibility` 去掉即可。
 
 **QQ 原生视频需要适配器带上链接。** 适配器默认会把视频段压成 `[视频] 文件: x.mp4，大小: N`，URL 和 file_id 都丢了，插件只能干瞪眼。给它两行补丁（`snowluma-adapter` 的 `codecs/inbound/message_codec.py`，`_build_video_text_segment`）：
 
@@ -316,6 +320,14 @@ video-storyboard/
 代码风格：`ruff`（line-length 110），无 `shell=True`，所有外部命令走参数列表。
 
 ## 变更日志
+
+**1.5.0**
+- 新增工具 `bili_search(keyword, limit)`：按关键词搜 B 站，返回标题/时长/播放量/UP 主/链接；匿名搜索偶发 `-412` 时自动隔一秒重试。
+- 新增工具 `bili_share(target)`：把 BV 号、链接或关键词对应的视频以「封面图 + 标题、时长、UP 主、链接」发到当前会话（走 `send.hybrid`，失败退回纯文字）。
+- 修热评抓不到：`x/v2/reply/main` 匿名请求会被风控成 `code=-352`，现在自动回退旧接口 `x/v2/reply?sort=2` 并分页合并。
+- 新增 `video_info()` / `resolve_by_title()`：小程序卡片只有标题、没有链接时可用标题反查 BV 号。
+- manifest 能力增加 `send.text` / `send.image` / `send.hybrid`。
+- 说明：SDK 没有 `send.video`，所以转发的是「封面 + 信息 + 链接」而非 mp4 本体。
 
 **1.4.0** —— 按一次第三方代码评审逐条修
 - **P0** `ffprobe_path` 之前被忽略（永远用 ffmpeg 顶替抽帧后的探测）；现在真正解析并调用，缺失才退化并告警。
