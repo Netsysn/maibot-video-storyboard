@@ -1,58 +1,58 @@
 {
-    "manifest_version":  2,
-    "id":  "netsysn.video-storyboard",
-    "version":  "1.5.0",
-    "name":  "视频分镜（Video Storyboard）",
-    "description":  "让麦麦真的能看懂视频：ffmpeg 抽帧拼成带编号与时间戳的分镜图交给视觉模型，B 站链接还会顺带抓弹幕和热评一起读。",
-    "author":  {
-                   "name":  "Netsysn",
-                   "url":  "https://github.com/Netsysn"
-               },
-    "license":  "MIT",
-    "urls":  {
-                 "repository":  "https://github.com/Netsysn/maibot-video-storyboard",
-                 "homepage":  "https://github.com/Netsysn/maibot-video-storyboard",
-                 "documentation":  "https://github.com/Netsysn/maibot-video-storyboard/blob/main/README.md",
-                 "issues":  "https://github.com/Netsysn/maibot-video-storyboard/issues"
-             },
-    "host_application":  {
-                             "min_version":  "1.3.5",
-                             "max_version":  "2.0.0"
-                         },
-    "sdk":  {
-                "min_version":  "2.10.0",
-                "max_version":  "3.0.0"
-            },
-    "plugin_type":  "media",
-    "display":  {
-                    "icon":  {
-                                 "type":  "lucide",
-                                 "value":  "film",
-                                 "fallback":  "images"
-                             }
-                },
-    "dependencies":  [
-                         {
-                             "type":  "python_package",
-                             "name":  "Pillow",
-                             "version_spec":  "\u003e=10.0.0"
-                         },
-                         {
-                             "type":  "python_package",
-                             "name":  "aiohttp",
-                             "version_spec":  "\u003e=3.8.0"
-                         }
-                     ],
-    "capabilities":  [
-                         "llm.generate",
-                         "send.text",
-                         "send.image",
-                         "send.hybrid"
-                     ],
-    "i18n":  {
-                 "default_locale":  "zh-CN",
-                 "supported_locales":  [
-                                           "zh-CN"
-                                       ]
-             }
+  "manifest_version": 2,
+  "id": "netsysn.video-storyboard",
+  "version": "1.6.0",
+  "name": "视频分镜（Video Storyboard）",
+  "description": "让麦麦真的能看懂视频：ffmpeg 抽帧拼成带编号与时间戳的分镜图交给视觉模型，B 站链接还会顺带抓弹幕和热评一起读。",
+  "author": {
+    "name": "Netsysn",
+    "url": "https://github.com/Netsysn"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/Netsysn/maibot-video-storyboard",
+    "homepage": "https://github.com/Netsysn/maibot-video-storyboard",
+    "documentation": "https://github.com/Netsysn/maibot-video-storyboard/blob/main/README.md",
+    "issues": "https://github.com/Netsysn/maibot-video-storyboard/issues"
+  },
+  "host_application": {
+    "min_version": "1.3.5",
+    "max_version": "2.0.0"
+  },
+  "sdk": {
+    "min_version": "2.10.0",
+    "max_version": "3.0.0"
+  },
+  "plugin_type": "media",
+  "display": {
+    "icon": {
+      "type": "lucide",
+      "value": "film",
+      "fallback": "images"
+    }
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "Pillow",
+      "version_spec": ">=10.0.0"
+    },
+    {
+      "type": "python_package",
+      "name": "aiohttp",
+      "version_spec": ">=3.8.0"
+    }
+  ],
+  "capabilities": [
+    "llm.generate",
+    "send.text",
+    "send.image",
+    "send.hybrid"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  }
 }

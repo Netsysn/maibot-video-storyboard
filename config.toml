@@ -2,7 +2,7 @@
 # 全部是相对/默认值，换台机器不用改；本机特殊路径请写在下面被注释掉的那两行。
 
 [plugin]
-config_version = "1.4.0"
+config_version = "1.6.0"
 enabled = true
 
 [trigger]
@@ -65,6 +65,13 @@ max_tokens = 2048
 max_chars = 480
 style = "chat"
 timeout_seconds = 60
+
+[share]
+review_cover = true          # 发图前用视觉模型审一遍封面
+review_task = "vlm"        # 用哪个模型任务审（要能读图）
+review_model = ""          # 留空用任务默认
+max_cover_edge = 720         # 封面长边缩到多少像素
+max_desc_chars = 80          # 卡片里带多少字简介（0=不带）
 
 [cache]
 enabled = true

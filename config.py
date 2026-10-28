@@ -396,12 +396,54 @@ class ExtraSection(PluginConfigBase):
     )
 
 
+class ShareSection(PluginConfigBase):
+    """转发卡片（bili_share）"""
+
+    __ui_label__ = "转发卡片"
+    __ui_icon__ = "image"
+    __ui_order__ = 6
+
+    review_cover: bool = Field(
+        default=True,
+        description="发出去之前用视觉模型审一遍封面，擦边/血腥/敏感的直接不发图",
+        json_schema_extra={"label": "审查封面", "order": 0},
+    )
+
+    review_task: str = Field(
+        default="vlm",
+        description="审封面用的模型任务名（要和能读图的任务一致）",
+        json_schema_extra={"label": "审查任务", "order": 1},
+    )
+
+    review_model: str = Field(
+        default="",
+        description="审封面指定模型名，留空用任务默认",
+        json_schema_extra={"label": "审查模型", "order": 2},
+    )
+
+    max_cover_edge: int = Field(
+        default=720,
+        ge=240,
+        le=1600,
+        description="封面长边缩到多少像素再发",
+        json_schema_extra={"label": "封面长边", "order": 3},
+    )
+
+    max_desc_chars: int = Field(
+        default=80,
+        ge=0,
+        le=300,
+        description="卡片里带多少字简介（0=不带）",
+        json_schema_extra={"label": "简介字数", "order": 4},
+    )
+
+
 class CacheSection(PluginConfigBase):
     """同一个视频不重复看"""
 
     __ui_label__ = "缓存"
     __ui_icon__ = "database"
-    __ui_order__ = 6
+    __ui_order__ = 7
 
     enabled: bool = Field(
         default=True,
@@ -423,7 +465,7 @@ class DebugSection(PluginConfigBase):
 
     __ui_label__ = "调试"
     __ui_icon__ = "bug"
-    __ui_order__ = 7
+    __ui_order__ = 8
 
     log_ffmpeg: bool = Field(
         default=False,
@@ -451,5 +493,6 @@ class VideoStoryboardConfig(PluginConfigBase):
     storyboard: StoryboardSection = Field(default_factory=StoryboardSection)
     vlm: VlmSection = Field(default_factory=VlmSection)
     extra: ExtraSection = Field(default_factory=ExtraSection)
+    share: ShareSection = Field(default_factory=ShareSection)
     cache: CacheSection = Field(default_factory=CacheSection)
     debug: DebugSection = Field(default_factory=DebugSection)

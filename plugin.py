@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import base64
+import io
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +27,14 @@ from .pipeline import CACHE_FILE_NAME, VideoStoryboardProcessor
 from .storyboard import StoryboardError, resolve_executable
 
 HOOK_TIMEOUT_MS = 90000
-PLUGIN_VERSION = "1.5.0"
+
+_SUSPECT_WORDS = (
+    "擦边", "福利", "写真", "私房", "露点", "裸露", "走光", "内衣", "低胸", "制服诱惑",
+    "色情", "援交", "涩涩", "涩图", "开车", "里番", "本子", "cos福利", "勾引",
+    "睡", "床照", "湿身", "真空", "巨乳", "爆乳", "下衣失踪", "腿照", "泳装",
+)
+
+PLUGIN_VERSION = "1.6.0"
 
 
 class VideoStoryboardPlugin(MaiBotPlugin):
@@ -215,7 +225,7 @@ class VideoStoryboardPlugin(MaiBotPlugin):
         "bili_share",
         description=(
             "把一条 B 站视频转到当前聊天：给 BV 号/链接，或者给关键词（会先搜再挑最合适的那个）。"
-            "插件会发一张封面图 + 标题、时长、UP 主、链接，就像转了个视频卡片。"
+            "插件会先审一遍封面，合适才发图，然后发一段「为什么转这个 + UP 主是谁 + 标题简介 + 链接」。"
         ),
         parameters=[
             ToolParameterInfo(
@@ -224,10 +234,21 @@ class VideoStoryboardPlugin(MaiBotPlugin):
                 description="BV 号、视频链接，或搜索关键词",
                 required=True,
             ),
+            ToolParameterInfo(
+                name="reason",
+                param_type=ToolParamType.STRING,
+                description="你为什么挑这个（一句话，会原样显示在卡片最上面），比如「播放量最高、猫梗最正」",
+                required=False,
+            ),
         ],
         visibility="deferred",
     )
-    async def handle_bili_share(self, target: str = "", **kwargs: Any) -> dict[str, Any]:
+    async def handle_bili_share(
+        self,
+        target: str = "",
+        reason: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """工具：把 B 站视频以封面卡片的形式转发到当前会话。"""
 
         stream_id = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
@@ -247,43 +268,158 @@ class VideoStoryboardPlugin(MaiBotPlugin):
         info = await video_info(bvid)
         if not info:
             return {"success": False, "content": "这条视频的信息拿不到，可能删了或者被限流"}
-        minutes, seconds = divmod(int(info["duration"]), 60)
-        caption = f"{info['title']}\n{minutes}:{seconds:02d} · UP {info['author']}\n{info['url']}"
-        sent_image = False
+
+        cfg = self.config.share
+        head = f"为什么转这个：{reason.strip()[:60]}" if reason.strip() else f"转个视频：{info['title'][:40]}"
+        title = info['title']
+        shown = title if ('《' in title or '「' in title) else f"《{title}》"
+        lines = [head, f"UP 主：{info['author'] or '未知'}", shown]
+        if cfg.max_desc_chars > 0 and info.get("desc"):
+            lines.append(info["desc"][: cfg.max_desc_chars].rstrip("，,。. ") + "…" if len(info["desc"]) > cfg.max_desc_chars else info["desc"])
+        lines.append(info["url"])
+        caption = "\n".join(lines)
+
+        image_b64 = ""
         if info.get("cover"):
-            data = await self._download_image(info["cover"])
-            if data:
-                try:
-                    await self.ctx.send.hybrid(
-                        [
-                            {"type": "image", "content": data},
-                            {"type": "text", "content": caption},
-                        ],
-                        stream_id,
-                    )
-                    sent_image = True
-                except Exception as exc:  # noqa: BLE001
-                    self.ctx.logger.warning("封面图文混排失败，退回纯文字：%s", exc)
+            jpeg = await self._prepare_cover(info["cover"], max_edge=cfg.max_cover_edge)
+            if jpeg:
+                if cfg.review_cover:
+                    context_text = f"{info['title']} {info.get('desc') or ''}"
+                    hit = next((w for w in _SUSPECT_WORDS if w in context_text), "")
+                    if hit:
+                        ok, why = False, f"标题/简介含敏感词「{hit}」"
+                    else:
+                        ok, why = await self._review_cover(
+                            jpeg,
+                            task_name=cfg.review_task,
+                            model_name=cfg.review_model,
+                            context_text=context_text,
+                        )
+                    if not ok:
+                        self.ctx.logger.info("封面没过审，只发文字：%s（%s）", info["title"][:30], why)
+                        jpeg = b""
+                if jpeg:
+                    image_b64 = base64.b64encode(jpeg).decode("ascii")
+
+        sent_image = False
+        if image_b64:
+            try:
+                await self.ctx.send.hybrid(
+                    [
+                        {"type": "image", "content": image_b64},
+                        {"type": "text", "content": caption},
+                    ],
+                    stream_id,
+                )
+                sent_image = True
+            except Exception as exc:  # noqa: BLE001
+                self.ctx.logger.warning("封面图文混排失败，退回纯文字：%s", exc)
         if not sent_image:
             await self.ctx.send.text(caption, stream_id)
-        self.ctx.logger.info("B站转发：%s %s", bvid, info["title"][:40])
-        return {"success": True, "content": f"转过去了：{info['title']}（{bvid}）"}
+        self.ctx.logger.info("B站转发：%s %s（图=%s）", bvid, info["title"][:40], sent_image)
+        return {
+            "success": True,
+            "content": f"转过去了：{info['title']}（{bvid}）" + ("" if sent_image else "，封面没过审就没发图"),
+        }
 
-    async def _download_image(self, url: str) -> str:
-        """把封面图下回来转成 base64，失败返回空串。"""
+    async def _prepare_cover(self, url: str, *, max_edge: int) -> bytes:
+        """下封面并缩到合理尺寸，返回 JPEG 字节；失败给空。"""
 
         try:
             timeout = aiohttp.ClientTimeout(total=15.0)
             async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
                 async with session.get(url, headers={"Referer": "https://www.bilibili.com/"}) as response:
                     if response.status != 200:
-                        return ""
+                        return b""
                     raw = await response.read()
         except Exception:  # noqa: BLE001
-            return ""
-        if not raw or len(raw) > 4 * 1024 * 1024:
-            return ""
-        return base64.b64encode(raw).decode("ascii")
+            return b""
+        if not raw or len(raw) > 6 * 1024 * 1024:
+            return b""
+        try:
+            from PIL import Image  # noqa: PLC0415 - 只有转发时才需要
+
+            with Image.open(io.BytesIO(raw)) as image:
+                image = image.convert("RGB")
+                image.thumbnail((max_edge, max_edge))
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=85, optimize=True)
+                out = buffer.getvalue()
+        except Exception:  # noqa: BLE001
+            return b""
+        return out if out and len(out) <= 4 * 1024 * 1024 else b""
+
+    async def _review_cover(
+        self,
+        jpeg: bytes,
+        *,
+        task_name: str,
+        model_name: str,
+        context_text: str = "",
+    ) -> tuple[bool, str]:
+        """用视觉模型审封面：擦边、血腥、敏感一律不发。解析失败按「不通过」处理。"""
+
+        prompt: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "你是聊天群的内容审核员，标准偏严：宁可错杀，不要放过。"
+                    "先看画面本身，再读画面里的文字，最后结合给出的标题/简介，给这张图打 0-100 的风险分。"
+                    "以下情况一律算高风险（≥60）：裸露或衣着暴露（低胸、深V、内衣、泳装、胸口/大腿特写）、"
+                    "暧昧姿势或表情、二次元角色的擦边构图（同样适用，不因为是动画就放宽）、"
+                    "画面内出现性暗示文字（如「想和你睡觉」「福利」「私房」）、血腥暴力、政治敏感、违法犯罪、猎奇不适。"
+                    "以下算中风险（30-59）：软色情暗示、暧昧双关台词、角色姿势暧昧但衣着正常。"
+                    "0-29：正常人物、动物、风景、游戏截图、表情包、普通文字图。"
+                    '只输出一行 JSON：{"ok": true, "risk": 10, "why": ""} 或 {"ok": false, "risk": 75, "why": "原因"}。'
+                    "ok 为 true 仅当风险分 < 30。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "这张图能直接发到群里吗？"
+                            + (f"（视频标题/简介：{context_text[:120]}）" if context_text else "")
+                        ),
+                    },
+                    {
+                        "type": "image",
+                        "image_format": "jpeg",
+                        "image_base64": base64.b64encode(jpeg).decode("ascii"),
+                    },
+                ],
+            },
+        ]
+        call_kwargs: dict[str, Any] = {"prompt": prompt, "temperature": 0.1, "max_tokens": 200}
+        if task_name:
+            call_kwargs["task_name"] = task_name
+        if model_name:
+            call_kwargs["model_name"] = model_name
+        try:
+            result = await self.ctx.llm.generate(**call_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"审核调用失败：{str(exc)[:60]}"
+        if not isinstance(result, dict) or not bool(result.get("success", False)):
+            return False, str((result or {}).get("error") or "审核没有返回结果")[:60]
+        text = str(result.get("response") or "").strip()
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return False, f"审核输出看不懂：{text[:40]}"
+        try:
+            payload = json.loads(match.group(0))
+        except ValueError:
+            return False, f"审核输出不是 JSON：{text[:40]}"
+        why = str(payload.get("why") or "")[:80]
+        ok = bool(payload.get("ok"))
+        try:
+            risk = int(payload.get("risk", 0))
+        except (TypeError, ValueError):
+            risk = 0
+        if not ok or risk >= 30:  # 双重保险：模型嘴上说通过但风险分不低的，也不发
+            return False, why or f"风险分 {risk}"
+        return True, why
 
     @Command(
         "video_storyboard_now",
