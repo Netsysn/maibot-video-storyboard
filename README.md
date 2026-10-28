@@ -54,7 +54,7 @@ git clone https://github.com/Netsysn/maibot-video-storyboard video-storyboard
 
 ### 方式二：插件市场
 
-已向 MaiBot 插件中心提交登记（[Mai-with-u/plugin-repo#1097](https://github.com/Mai-with-u/plugin-repo/issues/1097)），审核通过后在「插件市场」里搜 **视频分镜** 就能直接装。等不及就先用方式一。
+本插件在 [MaiBot 插件中心](https://github.com/Mai-with-u/plugin-repo) 走了登记流程：提交用该仓库的「Add Plugin / 添加插件」网页模板即可（模板会自动加上 `plugin-submission` 标签触发 CI 校验）。登记通过后在「插件市场」里搜 **视频分镜** 直接装；在那之前用方式一。
 
 ### 依赖清单
 
