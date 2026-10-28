@@ -1,7 +1,8 @@
-# 视频分镜插件本地配置（改动即热重载，不需要重启 OneKey）
+# 视频分镜插件配置（改完即热重载，不用重启 OneKey）
+# 全部是相对/默认值，换台机器不用改；本机特殊路径请写在下面被注释掉的那两行。
 
 [plugin]
-config_version = "1.3.0"
+config_version = "1.4.0"
 enabled = true
 
 [trigger]
@@ -12,7 +13,22 @@ max_videos_per_message = 1
 skip_short_seconds = 1.0
 report_failure = true
 link_videos = true
-link_domains = ["b23.tv", "bilibili.com", "bili2233.cn", "youtu.be", "youtube.com", "v.douyin.com", "douyin.com", "xhslink.com", "xiaohongshu.com", "weibo.com", "v.qq.com", "ixigua.com"]
+link_domains = [
+    "b23.tv",
+    "bilibili.com",
+    "bili2233.cn",
+    "youtu.be",
+    "youtube.com",
+    "v.douyin.com",
+    "douyin.com",
+    "xhslink.com",
+    "xiaohongshu.com",
+    "weibo.com",
+    "v.qq.com",
+    "ixigua.com",
+]
+unknown_group_allow = true
+max_concurrency = 2
 
 [media]
 download_timeout_seconds = 60
@@ -23,15 +39,20 @@ link_max_seconds = 600
 link_timeout_seconds = 180
 max_link_mb = 80
 cookies_file = ""
+allow_hosts = []
 
 [storyboard]
-ffmpeg_path = "C:/Users/N/AppData/Roaming/MaiBotOneKeyDesktop/23064c81e6dc/tools/ffmpeg/bin/ffmpeg.exe"
-ffprobe_path = "C:/Users/N/AppData/Roaming/MaiBotOneKeyDesktop/23064c81e6dc/tools/ffmpeg/bin/ffprobe.exe"
+# 只写名字：先在 PATH 找，再在数据目录及其父目录、每级下的 tools/ffmpeg/bin 找
+ffmpeg_path = "ffmpeg"
+ffprobe_path = "ffprobe"
+# 一键包自带 ffmpeg 的机器，可以改成下面这种相对路径（相对 MaiBot 数据目录往上找）
+# ffmpeg_path = "tools/ffmpeg/bin/ffmpeg.exe"
+# ffprobe_path = "tools/ffmpeg/bin/ffprobe.exe"
 cells = 9
 columns = 3
 max_seconds = 180
 cell_edge = 420
-font_path = "C:/Windows/Fonts/msyhbd.ttc"
+font_path = ""
 show_timestamp = true
 ffmpeg_timeout_seconds = 90
 jpeg_quality = 85
@@ -43,6 +64,7 @@ temperature = 0.3
 max_tokens = 2048
 max_chars = 480
 style = "chat"
+timeout_seconds = 60
 
 [cache]
 enabled = true
@@ -56,7 +78,7 @@ keep_temp_files = false
 enabled = true
 danmaku_count = 60
 danmaku_max_chars = 40
-comment_count = 20
+comment_count = 40
 comment_max_chars = 100
 comment_mode = 3
 timeout_seconds = 20.0

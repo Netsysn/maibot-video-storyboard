@@ -76,7 +76,7 @@ WebUI →「插件扩展」→「视频分镜」里可视化改，或直接编�
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 宿主开关（不要写进配置模型，宿主保留键） |
-| `config_version` | `1.3.0` | 配置版本，别手动改 |
+| `config_version` | `1.4.0` | 配置版本，别手动改 |
 
 ### `[trigger]` 什么时候去看
 | 键 | 默认 | 说明 |
@@ -89,6 +89,8 @@ WebUI →「插件扩展」→「视频分镜」里可视化改，或直接编�
 | `report_failure` | `true` | 看失败时在消息里留一句说明 |
 | `link_videos` | `true` | 认消息里的视频站链接 |
 | `link_domains` | 12 个 | 支持 b23.tv / bilibili / 抖音 / 小红书 / YouTube / 微博 / 腾讯视频 / 西瓜 等 |
+| `unknown_group_allow` | `true` | 拿不到群号（适配器没给）时是否照常处理；想只认白名单就填 `false` |
+| `max_concurrency` | `2` | 同时最多看几个视频，多的排队（每个都在吃内存和带宽） |
 
 ### `[media]` 取文件
 | 键 | 默认 | 说明 |
@@ -101,16 +103,17 @@ WebUI →「插件扩展」→「视频分镜」里可视化改，或直接编�
 | `link_timeout_seconds` | `180` | yt-dlp 下载超时 |
 | `max_link_mb` | `80` | 网页视频体积上限 |
 | `cookies_file` | `""` | cookies.txt 路径；配了才拿得到 B 站字幕/更高清 |
+| `allow_hosts` | `[]` | 直链下载的域名白名单；留空=不限域名，但解析到内网（10/172.16/192.168/127/169.254 等）的地址一律拒绝 |
 
 ### `[storyboard]` 分镜
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `ffmpeg_path` / `ffprobe_path` | 实例 `tools/ffmpeg/bin` | 可写绝对路径 |
+| `ffmpeg_path` / `ffprobe_path` | `ffmpeg` / `ffprobe` | 先查 PATH，再查数据目录及其各级父目录、每级下的 `tools/ffmpeg/bin`；也可写绝对路径 |
 | `cells` | `9` | 拼几格（9 / 12 常用，太多会糊） |
 | `columns` | `3` | 列数 |
 | `max_seconds` | `180` | 只看前 N 秒 |
 | `cell_edge` | `420` | 单格长边像素 |
-| `font_path` | 微软雅黑粗体 | 编号与时间戳用的字体 |
+| `font_path` | `""` | 留空自动找（Windows 微软雅黑 / Linux Noto·文泉驿 / macOS 苹方），中文变方框时才需要指定 |
 | `show_timestamp` | `true` | 每格右下角时间戳 |
 | `ffmpeg_timeout_seconds` | `90` | 抽帧超时 |
 | `jpeg_quality` | `85` | 输出质量 |
@@ -124,6 +127,7 @@ WebUI →「插件扩展」→「视频分镜」里可视化改，或直接编�
 | `max_tokens` | `2048` | 思考模型会吃掉一部分 |
 | `max_chars` | `480` | 描述字数上限 |
 | `style` | `chat` | `chat` 口语 / `detail` 详细 |
+| `timeout_seconds` | `60` | 视觉模型单次调用超时 |
 
 ### `[extra]` 弹幕与热评（B 站专属）★
 | 键 | 默认 | 说明 |
@@ -244,6 +248,17 @@ if media_url:
 
 ## 更新日志
 
+**1.4.0**（按第三方代码评审修的一轮）
+- 修 **P0**：`ffprobe_path` 之前被忽略、永远用 ffmpeg 猜——现在 ffprobe 真正被调用，缺了会退化并给警告；默认值改成 `ffmpeg`/`ffprobe`，PATH 与 `tools/ffmpeg/bin` 都能找不到错。
+- 修 **P0**：`config.toml` 不再写死本机绝对路径（原来泄露了一键包用户目录），开箱即可用。
+- 修 **P1**：时间戳与实际帧错位（首格偏早半格、末格缺片尾）——改成 `fps=fps=N:start_time=step/2` 一次抽帧，时间戳固定按 `step*(i+0.5)` 标。
+- 修 **P1**：非视频站直链下载前拒绝内网地址（防 SSRF），支持可选域名白名单，下载前先看 `Content-Length`。
+- 修 **P1**：消息里的文件名不再直接拼进临时目录（路径穿越），并强制视频扩展名。
+- 修 **P1**：缓存键改成 `file_id → BV 号 → 路径 → 去查询串的 URL`，短链与长链共享同一个缓存（之前每条 CDN 签名链接都算新视频）。
+- 修 **P1**：拿不到群号时不再静默放行——新增 `trigger.unknown_group_allow`（默认放行，但会 warning 一次）。
+- 修 **P2**：字体按平台回退、不再用 `font.size` 量文字；时长缺 `format.duration` 时兜底流级；热评页大小按需取；yt-dlp 由两次调用合并成一次（下载前用 `--match-filter`/`--max-filesize` 拦超长超大）；排队改成带超时的信号量（默认并发 2，可配）；目录清理改用 `shutil.rmtree`；缓存写盘放到线程里；弹幕解压加了 8MB 上限（防压缩炸弹）。
+- 新增 `pyproject.toml`、`tests/`（14 个纯逻辑单测，不需要宿主/ffmpeg/网络）。
+
 **1.3.0**
 - 新增 `[extra]`：B 站弹幕（默认 60 条，均匀抽样、去重）+ 热评（默认 20 条，可改排序），数量与字数都可配。
 - 视觉提示词里区分「画面事实」与「观众观点」，弹幕热评只用来理解梗，不写成画面描述。
@@ -263,6 +278,34 @@ if media_url:
 
 **1.0.0**
 - QQ 原生视频分镜：抽帧、拼图、视觉描述、注入、缓存。
+
+---
+
+## 开发与测试
+
+纯逻辑部分有单测，不需要宿主、不需要 ffmpeg、不联网：
+
+```bash
+cd local_video-storyboard
+python -m unittest discover -s tests -v
+```
+
+抽帧/拼图/调模型这些依赖真实环境的行为，请在宿主里实跑一把（发个视频或 `/看视频 <链接>`，然后看 `logs/maibot.log` 里「视频分镜」那几行）。
+
+目录结构：
+
+```
+local_video-storyboard/
+├── plugin.py       # 宿主装配：Hook / Tool / Command
+├── pipeline.py     # 取文件 → 抽帧 → 拼图 → 调模型 → 缓存
+├── storyboard.py   # ffmpeg/ffprobe 调用、抽帧、拼图
+├── linkvid.py      # yt-dlp 下载网页视频
+├── bili.py         # B 站弹幕与热评
+├── vlm.py          # 视觉提示词与返回解析
+├── config.py       # 配置模型（WebUI 表单）
+├── tests/          # 单测
+└── config.toml     # 默认配置
+```
 
 ---
 

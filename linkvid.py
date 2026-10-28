@@ -2,14 +2,14 @@
 
 群里更常见的不是 QQ 原生视频，而是一条分享链接（``https://b23.tv/xxx``）。
 这种链接直接 HTTP 抓页面只能拿到标题和简介，视频本体要交给 yt-dlp。
+
+实现上走 yt-dlp 的 Python API 而不是命令行：一次 ``extract_info(download=False)``
+就拿到标题/时长/落地页，超长超大可以在下载前拒掉，不用为了探测再跑一遍。
 """
 
 from __future__ import annotations
 
-import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 DEFAULT_DOMAINS: tuple[str, ...] = (
@@ -56,7 +56,7 @@ def find_links(text: str, domains: list[str] | tuple[str, ...] | None = None, *,
 
 
 def _vtt_to_text(path: Path, *, max_chars: int = 4000) -> str:
-    """把 WebVTT 字幕压成一段连续文本（去掉时间轴、标签和重复行）。"""
+    """把 vtt 字幕压成一行纯文本。"""
 
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -80,27 +80,6 @@ def _vtt_to_text(path: Path, *, max_chars: int = 4000) -> str:
     return text[:max_chars]
 
 
-def _run(cmd: list[str], *, timeout: float, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603 - 参数固定由本模块构造
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        env=env,
-    )
-
-
-def _build_env(ffmpeg_dir: str) -> dict[str, str]:
-    env = dict(os.environ)
-    if ffmpeg_dir:
-        env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PYTHONUTF8", "1")
-    return env
-
-
 def download_video(
     url: str,
     *,
@@ -111,60 +90,75 @@ def download_video(
     timeout: float = 180.0,
     max_mb: int = 80,
     cookies_file: str = "",
-) -> tuple[Path, str, str]:
-    """下载链接指向的视频，返回 ``(本地路径, 标题, 字幕文本)``。"""
+) -> tuple[Path, str, str, str]:
+    """下载链接指向的视频，返回 ``(本地路径, 标题, 字幕文本, 落地页 URL)``。
+
+    ``timeout`` 只作用在单次网络读写上（yt-dlp 的 ``socket_timeout``）；
+    整体超时由调用方（``pipeline``）用 ``asyncio.wait_for`` 兜住。
+    """
+
+    try:
+        import yt_dlp  # noqa: PLC0415 - 可选依赖，缺失时要给出可读的提示
+    except ImportError as exc:  # pragma: no cover - 宿主一般自带
+        raise LinkVideoError("宿主环境里没有 yt-dlp，装一下才能看网页视频") from exc
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    env = _build_env(ffmpeg_dir)
-    base = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-warnings", "--no-progress"]
-    if cookies_file:
-        base += ["--cookies", cookies_file]
-
-    probe = _run(base + ["--skip-download", "--print", "%(title)s", "--print", "%(duration)s", url], timeout=timeout, env=env)
-    if probe.returncode != 0:
-        message = (probe.stderr or probe.stdout or "").strip().splitlines()
-        raise LinkVideoError(f"解析链接失败：{message[-1][:120] if message else '未知错误'}")
-    printed = [line for line in (probe.stdout or "").splitlines() if line.strip()]
-    title = printed[0].strip() if printed else ""
-    duration = 0.0
-    if len(printed) > 1:
-        try:
-            duration = float(printed[1])
-        except ValueError:
-            duration = 0.0
-    if duration and duration > max_seconds:
-        raise LinkVideoError(f"视频太长（{duration / 60:.0f} 分），先不看")
-
     limit = int(quality)
     # 竖屏视频的 height 可能远大于 width（如 480x708），所以宽高都要试；最后兜底 b
     format_selector = (
         f"bv*[height<={limit}]+ba/bv*[width<={limit}]+ba/"
         f"b[height<={limit}]/b[width<={limit}]/b"
     )
-    template = str(out_dir / "%(id)s.%(ext)s")
-    download = _run(
-        base
-        + [
-            "-f",
-            format_selector,
-            "--merge-output-format",
-            "mp4",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs",
-            "zh.*,ai-zh,en.*",
-            "--sub-format",
-            "vtt",
-            "-o",
-            template,
-            url,
-        ],
-        timeout=timeout,
-        env=env,
-    )
-    if download.returncode != 0:
-        message = (download.stderr or download.stdout or "").strip().splitlines()
-        raise LinkVideoError(f"下载失败：{message[-1][:120] if message else '未知错误'}")
+
+    options: dict[str, object] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "noplaylist": True,
+        "format": format_selector,
+        "merge_output_format": "mp4",
+        "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["zh.*", "ai-zh", "en.*"],
+        "subtitlesformat": "vtt",
+        "retries": 2,
+        "socket_timeout": max(5.0, min(30.0, float(timeout))),
+    }
+    if ffmpeg_dir:
+        options["ffmpeg_location"] = ffmpeg_dir
+    if cookies_file:
+        options["cookiefile"] = cookies_file
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:  # type: ignore[arg-type]
+            info = ydl.extract_info(url, download=False)
+            if not isinstance(info, dict):
+                raise LinkVideoError("解析链接失败：没有拿到视频信息")
+
+            title = str(info.get("title") or "").strip()
+            webpage_url = str(info.get("webpage_url") or url)
+            try:
+                duration = float(info.get("duration") or 0.0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            if duration and duration > max_seconds:
+                raise LinkVideoError(f"视频太长（{duration / 60:.0f} 分），先不看")
+
+            approx = info.get("filesize_approx") or info.get("filesize") or 0
+            try:
+                approx_bytes = int(approx)
+            except (TypeError, ValueError):
+                approx_bytes = 0
+            if approx_bytes and approx_bytes > max_mb * 1024 * 1024:
+                raise LinkVideoError(f"视频大约 {approx_bytes / 1024 / 1024:.0f}MB，超过上限先不看")
+
+            ydl.download([webpage_url])
+    except LinkVideoError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - yt-dlp 的异常类型太多，统一转成用户可读的
+        message = str(exc).strip().splitlines()
+        raise LinkVideoError(f"下载失败：{message[0][:120] if message else '未知错误'}") from exc
 
     videos = sorted(out_dir.glob("*.mp4"), key=lambda item: item.stat().st_size, reverse=True)
     if not videos:
@@ -179,4 +173,4 @@ def download_video(
         transcript = _vtt_to_text(subtitle)
         if transcript:
             break
-    return video, title, transcript
+    return video, title, transcript, webpage_url

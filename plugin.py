@@ -20,7 +20,7 @@ from .pipeline import CACHE_FILE_NAME, VideoStoryboardProcessor
 from .storyboard import StoryboardError, resolve_executable
 
 HOOK_TIMEOUT_MS = 90000
-PLUGIN_VERSION = "1.3.0"
+PLUGIN_VERSION = "1.4.0"
 
 
 class VideoStoryboardPlugin(MaiBotPlugin):
@@ -54,7 +54,7 @@ class VideoStoryboardPlugin(MaiBotPlugin):
         try:
             resolved = resolve_executable(
                 str(self.config.storyboard.ffmpeg_path),
-                search_roots=[data_dir, data_dir.parent, data_dir.parent.parent],
+                search_roots=self._processor.search_roots(),
             )
             ffmpeg_state = f"ffmpeg={resolved}"
         except StoryboardError as exc:

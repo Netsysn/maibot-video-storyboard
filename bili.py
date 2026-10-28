@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import random
 import zlib
 from typing import Any
 from urllib.parse import quote
@@ -27,7 +26,7 @@ HEADERS = {
 
 VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
 DANMAKU_API = "https://comment.bilibili.com/{cid}.xml"
-REPLY_API = "https://api.bilibili.com/x/v2/reply/main?type=1&oid={aid}&mode={mode}&ps=20"
+REPLY_API = "https://api.bilibili.com/x/v2/reply/main?type=1&oid={aid}&mode={mode}&ps={ps}"
 
 _BVID_RE = re.compile(r"(BV[0-9A-Za-z]{10})")
 _DANMAKU_RE = re.compile(r'<d p="([^"]*)">(.*?)</d>', re.S)
@@ -65,14 +64,31 @@ async def resolve_bvid(session: aiohttp.ClientSession, url: str) -> str:
     return extract_bvid(final)
 
 
-def _inflate(raw: bytes) -> str:
-    """弹幕 XML 是裸 deflate 压的，先解压再当文本。"""
+def _inflate(raw: bytes, *, max_bytes: int = 8 * 1024 * 1024) -> str:
+    """弹幕 XML 是裸 deflate 压的，先解压再当文本。
 
+    解压设了上限（默认 8MB）：弹幕池可以被塞成压缩炸弹，
+    没上限的话一个小响应就能把内存吃满。
+    """
+
+    if not raw:
+        return ""
     if raw[:5] == b"<?xml":
-        return raw.decode("utf-8", "ignore")
+        return raw[:max_bytes].decode("utf-8", "ignore")
     for wbits in (-zlib.MAX_WBITS, 16 + zlib.MAX_WBITS, zlib.MAX_WBITS):
         try:
-            return zlib.decompress(raw, wbits).decode("utf-8", "ignore")
+            decompressor = zlib.decompressobj(wbits)
+            chunks: list[bytes] = []
+            total = 0
+            data = raw
+            while data and total < max_bytes:
+                chunk = decompressor.decompress(data, max_bytes - total)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                data = decompressor.unconsumed_tail
+            return b"".join(chunks).decode("utf-8", "ignore")
         except zlib.error:
             continue
     return ""
@@ -121,8 +137,9 @@ async def fetch_comments(
 
     results: list[tuple[int, str, str]] = []
     pagination = ""
+    remaining = max(1, min(int(count), 100))
     for _ in range(6):
-        url = REPLY_API.format(aid=aid, mode=mode)
+        url = REPLY_API.format(aid=aid, mode=mode, ps=min(20, remaining))
         if pagination:
             url += "&pagination_str=" + quote(pagination, safe="")
         try:
@@ -144,6 +161,7 @@ async def fetch_comments(
                 return results
         cursor = data.get("cursor") or {}
         pagination = str(cursor.get("pagination_reply") or "")
+        remaining = max(1, min(int(count) - len(results), 100))
         if cursor.get("is_end") or not pagination:
             break
     return results
@@ -215,10 +233,5 @@ async def fetch_extras(
                 )
     except (BiliError, aiohttp.ClientError, TimeoutError, ValueError, KeyError):
         return ""
-
-    # 弹幕太多时先打散一点，避免全是同一句刷屏
-    if len(danmaku) > 200:
-        danmaku = random.sample(danmaku, 200)
-        danmaku.sort(key=lambda item: item[0])
 
     return format_extras(danmaku=danmaku, comments=comments)

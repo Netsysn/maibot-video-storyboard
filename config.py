@@ -99,6 +99,20 @@ class TriggerSection(PluginConfigBase):
         json_schema_extra={"label": "链接域名", "order": 7},
     )
 
+    unknown_group_allow: bool = Field(
+        default=True,
+        description="拿不到群号时（适配器没给）是否照常处理；想严格只要白名单就关掉",
+        json_schema_extra={"label": "群号未知时放行", "order": 8},
+    )
+
+    max_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=4,
+        description="同时最多看几个视频（多了排队，会占内存和带宽）",
+        json_schema_extra={"label": "同时处理数", "order": 9},
+    )
+
 
 class MediaSection(PluginConfigBase):
     """怎么把视频文件弄到手"""
@@ -167,6 +181,16 @@ class MediaSection(PluginConfigBase):
         json_schema_extra={"label": "cookies 文件", "order": 7, "hint": "留空则匿名下载，通常只有 360p"},
     )
 
+    allow_hosts: list[str] = Field(
+        default_factory=list,
+        description="直链下载的域名白名单（留空=不限，但仍会拒绝解析到内网的地址）",
+        json_schema_extra={
+            "label": "直链域名白名单",
+            "order": 8,
+            "hint": "填了就只允许这些域名；B 站链接走 yt-dlp 不受影响",
+        },
+    )
+
 
 class StoryboardSection(PluginConfigBase):
     """怎么切帧、怎么拼图"""
@@ -176,14 +200,18 @@ class StoryboardSection(PluginConfigBase):
     __ui_order__ = 3
 
     ffmpeg_path: str = Field(
-        default="tools/ffmpeg/bin/ffmpeg.exe",
-        description="ffmpeg 可执行文件；相对路径会依次在数据目录、MaiBot 目录、实例根目录下找",
-        json_schema_extra={"label": "ffmpeg 路径", "order": 0},
+        default="ffmpeg",
+        description="ffmpeg 可执行文件；只写名字则先在 PATH 里找，再到数据目录及其各级父目录、每级下的 tools/ffmpeg/bin 里找",
+        json_schema_extra={
+            "label": "ffmpeg 路径",
+            "order": 0,
+            "hint": "系统装过就留 ffmpeg；一键包用户可填 tools/ffmpeg/bin/ffmpeg.exe",
+        },
     )
 
     ffprobe_path: str = Field(
-        default="tools/ffmpeg/bin/ffprobe.exe",
-        description="ffprobe 可执行文件",
+        default="ffprobe",
+        description="ffprobe 可执行文件（找不到会退化用 ffmpeg 探测，并在日志里提示）",
         json_schema_extra={"label": "ffprobe 路径", "order": 1},
     )
 
@@ -220,9 +248,9 @@ class StoryboardSection(PluginConfigBase):
     )
 
     font_path: str = Field(
-        default="C:/Windows/Fonts/msyhbd.ttc",
-        description="标注用的字体文件",
-        json_schema_extra={"label": "字体", "order": 6},
+        default="",
+        description="标注用的字体文件；留空则按系统自动找（Windows 微软雅黑、Linux Noto/文泉驿、macOS 苹方）",
+        json_schema_extra={"label": "字体", "order": 6, "hint": "留空最省事；中文显示成方框时再指定"},
     )
 
     show_timestamp: bool = Field(
@@ -295,6 +323,14 @@ class VlmSection(PluginConfigBase):
         default="chat",
         description="chat=聊天气口吻（默认）；detail=尽量详细",
         json_schema_extra={"label": "描述风格", "order": 5},
+    )
+
+    timeout_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=300,
+        description="视觉模型单次调用超时（秒）",
+        json_schema_extra={"label": "模型超时（秒）", "order": 6},
     )
 
 

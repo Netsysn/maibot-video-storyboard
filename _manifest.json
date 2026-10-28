@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "netsysn.video-storyboard",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "name": "视频分镜（Video Storyboard）",
   "description": "让麦麦真的能看懂视频：ffmpeg 抽帧拼成带编号与时间戳的分镜图交给视觉模型，B 站链接还会顺带抓弹幕和热评一起读。",
   "author": {
@@ -17,11 +17,11 @@
   },
   "host_application": {
     "min_version": "1.3.5",
-    "max_version": "1.3.99"
+    "max_version": "2.0.0"
   },
   "sdk": {
     "min_version": "2.10.0",
-    "max_version": "2.99.99"
+    "max_version": "3.0.0"
   },
   "plugin_type": "media",
   "display": {

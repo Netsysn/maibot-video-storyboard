@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maibot-video-storyboard"
+version = "1.4.0"
+description = "MaiBot 插件：让麦麦真的能看懂视频（抽帧拼分镜图交给视觉模型，B 站链接附弹幕与热评）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Netsysn" }]
+keywords = ["maibot", "maibot-plugin", "video", "storyboard", "ffmpeg"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "Pillow>=10.0.0",
+    "aiohttp>=3.8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Netsysn/maibot-video-storyboard"
+Repository = "https://github.com/Netsysn/maibot-video-storyboard"
+Issues = "https://github.com/Netsysn/maibot-video-storyboard/issues"
+
+# 这个仓库是 MaiBot 插件（由宿主加载，不做成 pip 包），所以不打包任何模块；
+# pyproject 只用来声明元数据和依赖，方便工具链与 IDE 识别。
+[tool.setuptools]
+packages = []
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
