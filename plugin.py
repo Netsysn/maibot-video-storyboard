@@ -9,18 +9,22 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
+
+import aiohttp
 
 from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
+from .bili import extract_bvid, search_videos, video_info
 from .config import VideoStoryboardConfig
 from .pipeline import CACHE_FILE_NAME, VideoStoryboardProcessor
 from .storyboard import StoryboardError, resolve_executable
 
 HOOK_TIMEOUT_MS = 90000
-PLUGIN_VERSION = "1.4.0"
+PLUGIN_VERSION = "1.5.0"
 
 
 class VideoStoryboardPlugin(MaiBotPlugin):
@@ -155,6 +159,131 @@ class VideoStoryboardPlugin(MaiBotPlugin):
             self.ctx.logger.warning("视频分镜工具失败（%s）：%s", link[:80], exc)
             return {"success": False, "content": f"没看成：{str(exc)[:80]}"}
         return {"success": True, "content": text}
+
+    @Tool(
+        "bili_search",
+        description=(
+            "在 B 站按关键词搜视频，返回候选列表（标题、时长、播放量、UP 主、链接）。"
+            "当有人让你搜视频、找个片子，或者你想自己挑一个视频来发/看时，先用它拿候选。"
+        ),
+        parameters=[
+            ToolParameterInfo(
+                name="keyword",
+                param_type=ToolParamType.STRING,
+                description="搜索词，例如「哈基米 猫」「原神 新版本」",
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="limit",
+                param_type=ToolParamType.INTEGER,
+                description="返回几个候选，默认 5，最多 10",
+                required=False,
+            ),
+        ],
+        visibility="deferred",
+    )
+    async def handle_bili_search(self, keyword: str = "", limit: int = 5, **kwargs: Any) -> dict[str, Any]:
+        """工具：按关键词搜 B 站视频。"""
+
+        del kwargs
+        word = str(keyword or "").strip()
+        if not word:
+            return {"success": False, "content": "没给搜索词"}
+        self.ctx.logger.info("B站搜索：%s（%s 条）", word, limit)
+        try:
+            items = await search_videos(word, limit=max(1, min(int(limit or 5), 10)))
+        except Exception as exc:  # noqa: BLE001
+            self.ctx.logger.warning("B站搜索失败：%s", exc)
+            return {"success": False, "content": f"搜不动：{str(exc)[:80]}"}
+        if not items:
+            return {"success": False, "content": f"没搜到关于「{word}」的视频"}
+        lines = []
+        for index, item in enumerate(items, 1):
+            minutes = item["seconds"] // 60
+            seconds = item["seconds"] % 60
+            lines.append(
+                f"{index}. {item['title']}（{minutes}:{seconds:02d}，播放 {item['play']:,}，UP {item['author']}）"
+                f" {item['url']}"
+            )
+        return {
+            "success": True,
+            "content": f"搜到 {len(items)} 个，自己挑一个：\n" + "\n".join(lines),
+            "items": [{k: v for k, v in item.items() if k != "description"} for item in items],
+        }
+
+    @Tool(
+        "bili_share",
+        description=(
+            "把一条 B 站视频转到当前聊天：给 BV 号/链接，或者给关键词（会先搜再挑最合适的那个）。"
+            "插件会发一张封面图 + 标题、时长、UP 主、链接，就像转了个视频卡片。"
+        ),
+        parameters=[
+            ToolParameterInfo(
+                name="target",
+                param_type=ToolParamType.STRING,
+                description="BV 号、视频链接，或搜索关键词",
+                required=True,
+            ),
+        ],
+        visibility="deferred",
+    )
+    async def handle_bili_share(self, target: str = "", **kwargs: Any) -> dict[str, Any]:
+        """工具：把 B 站视频以封面卡片的形式转发到当前会话。"""
+
+        stream_id = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
+        raw = str(target or "").strip()
+        if not raw:
+            return {"success": False, "content": "没给要转的视频"}
+        bvid = extract_bvid(raw)
+        if not bvid and raw.startswith("http"):
+            items = await search_videos(raw, limit=1)
+            bvid = items[0]["bvid"] if items else ""
+        if not bvid:
+            items = await search_videos(raw, limit=5)
+            bvid = items[0]["bvid"] if items else ""
+        if not bvid:
+            return {"success": False, "content": f"没找到「{raw}」这条视频"}
+
+        info = await video_info(bvid)
+        if not info:
+            return {"success": False, "content": "这条视频的信息拿不到，可能删了或者被限流"}
+        minutes, seconds = divmod(int(info["duration"]), 60)
+        caption = f"{info['title']}\n{minutes}:{seconds:02d} · UP {info['author']}\n{info['url']}"
+        sent_image = False
+        if info.get("cover"):
+            data = await self._download_image(info["cover"])
+            if data:
+                try:
+                    await self.ctx.send.hybrid(
+                        [
+                            {"type": "image", "content": data},
+                            {"type": "text", "content": caption},
+                        ],
+                        stream_id,
+                    )
+                    sent_image = True
+                except Exception as exc:  # noqa: BLE001
+                    self.ctx.logger.warning("封面图文混排失败，退回纯文字：%s", exc)
+        if not sent_image:
+            await self.ctx.send.text(caption, stream_id)
+        self.ctx.logger.info("B站转发：%s %s", bvid, info["title"][:40])
+        return {"success": True, "content": f"转过去了：{info['title']}（{bvid}）"}
+
+    async def _download_image(self, url: str) -> str:
+        """把封面图下回来转成 base64，失败返回空串。"""
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=15.0)
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+                async with session.get(url, headers={"Referer": "https://www.bilibili.com/"}) as response:
+                    if response.status != 200:
+                        return ""
+                    raw = await response.read()
+        except Exception:  # noqa: BLE001
+            return ""
+        if not raw or len(raw) > 4 * 1024 * 1024:
+            return ""
+        return base64.b64encode(raw).decode("ascii")
 
     @Command(
         "video_storyboard_now",

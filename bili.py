@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import zlib
@@ -27,6 +28,11 @@ HEADERS = {
 VIEW_API = "https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
 DANMAKU_API = "https://comment.bilibili.com/{cid}.xml"
 REPLY_API = "https://api.bilibili.com/x/v2/reply/main?type=1&oid={aid}&mode={mode}&ps={ps}"
+REPLY_LEGACY_API = "https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=2&ps={ps}&pn={pn}"
+SEARCH_API = (
+    "https://api.bilibili.com/x/web-interface/search/type"
+    "?search_type=video&keyword={keyword}&page={page}&page_size={size}"
+)
 
 _BVID_RE = re.compile(r"(BV[0-9A-Za-z]{10})")
 _DANMAKU_RE = re.compile(r'<d p="([^"]*)">(.*?)</d>', re.S)
@@ -125,15 +131,28 @@ def _clean(text: str, limit: int) -> str:
     return text[:limit]
 
 
-async def fetch_comments(
+def _reply_rows(payload: dict[str, Any], *, count: int, max_chars: int, out: list[tuple[int, str, str]]) -> None:
+    data = payload.get("data") or {}
+    for reply in data.get("replies") or []:
+        content = ((reply.get("content") or {}).get("message") or "").strip()
+        text = _clean(content, max_chars)
+        if not text:
+            continue
+        member = (reply.get("member") or {}).get("uname") or "匿名"
+        out.append((int(reply.get("like") or 0), str(member), text))
+        if len(out) >= count:
+            return
+
+
+async def _fetch_comments_main(
     session: aiohttp.ClientSession,
     aid: int,
     *,
     count: int,
     max_chars: int,
-    mode: int = 3,
+    mode: int,
 ) -> list[tuple[int, str, str]]:
-    """取热评：``(点赞数, 昵称, 内容)``。mode=3 是「最热」。"""
+    """新版热评接口（x/v2/reply/main），带游标翻页。风控时可能返回 code=-352。"""
 
     results: list[tuple[int, str, str]] = []
     pagination = ""
@@ -143,28 +162,73 @@ async def fetch_comments(
         if pagination:
             url += "&pagination_str=" + quote(pagination, safe="")
         try:
-            raw = await _get(session, url)
-            payload: dict[str, Any] = json.loads(raw.decode("utf-8", "ignore"))
+            payload: dict[str, Any] = json.loads((await _get(session, url)).decode("utf-8", "ignore"))
         except (BiliError, ValueError, aiohttp.ClientError, TimeoutError):
             break
         if payload.get("code") not in (0, None):
             break
-        data = payload.get("data") or {}
-        for reply in data.get("replies") or []:
-            content = ((reply.get("content") or {}).get("message") or "").strip()
-            text = _clean(content, max_chars)
-            if not text:
-                continue
-            member = (reply.get("member") or {}).get("uname") or "匿名"
-            results.append((int(reply.get("like") or 0), str(member), text))
-            if len(results) >= count:
-                return results
-        cursor = data.get("cursor") or {}
+        _reply_rows(payload, count=count, max_chars=max_chars, out=results)
+        if len(results) >= count:
+            return results
+        cursor = (payload.get("data") or {}).get("cursor") or {}
         pagination = str(cursor.get("pagination_reply") or "")
         remaining = max(1, min(int(count) - len(results), 100))
         if cursor.get("is_end") or not pagination:
             break
     return results
+
+
+async def _fetch_comments_legacy(
+    session: aiohttp.ClientSession,
+    aid: int,
+    *,
+    count: int,
+    max_chars: int,
+) -> list[tuple[int, str, str]]:
+    """旧热评接口（x/v2/reply?sort=2），匿名请求反而不会被 -352 风控。"""
+
+    results: list[tuple[int, str, str]] = []
+    for page in range(1, 4):
+        url = REPLY_LEGACY_API.format(aid=aid, ps=20, pn=page)
+        try:
+            payload: dict[str, Any] = json.loads((await _get(session, url)).decode("utf-8", "ignore"))
+        except (BiliError, ValueError, aiohttp.ClientError, TimeoutError):
+            break
+        if payload.get("code") not in (0, None):
+            break
+        before = len(results)
+        _reply_rows(payload, count=count, max_chars=max_chars, out=results)
+        if len(results) >= count or len(results) == before:
+            break
+    results.sort(key=lambda item: item[0], reverse=True)
+    return results
+
+
+async def fetch_comments(
+    session: aiohttp.ClientSession,
+    aid: int,
+    *,
+    count: int,
+    max_chars: int,
+    mode: int = 3,
+) -> list[tuple[int, str, str]]:
+    """取热评：``(点赞数, 昵称, 内容)``。
+
+    先走 ``x/v2/reply/main``（最热、带游标），匿名被风控（code=-352）时
+    回退到旧接口 ``x/v2/reply?sort=2``——两条路都空才算真的取不到。
+    """
+
+    results = await _fetch_comments_main(session, aid, count=count, max_chars=max_chars, mode=mode)
+    if len(results) < count:
+        fallback = await _fetch_comments_legacy(session, aid, count=count, max_chars=max_chars)
+        seen = {(likes, text) for likes, _user, text in results}
+        for row in fallback:
+            if (row[0], row[2]) in seen:
+                continue
+            results.append(row)
+            if len(results) >= count:
+                break
+    return results[:count]
 
 
 def format_extras(
@@ -235,3 +299,155 @@ async def fetch_extras(
         return ""
 
     return format_extras(danmaku=danmaku, comments=comments)
+
+
+# ===== 搜索 =====
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _unescape(text: str) -> str:
+    return (
+        (text or "")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+    )
+
+
+def _clean_str(text: str) -> str:
+    """搜索结果里的标题带 <em class="keyword"> 高亮和 HTML 实体，先洗一遍。"""
+
+    return re.sub(r"\s+", " ", _unescape(_TAG_RE.sub("", text or ""))).strip()
+
+
+def _seconds(duration: str) -> int:
+    """搜索接口给的是 "12:34" 这种字符串。"""
+
+    parts = [p for p in (duration or "").split(":") if p.isdigit()]
+    total = 0
+    for part in parts:
+        total = total * 60 + int(part)
+    return total
+
+
+def _cover_url(pic: str) -> str:
+    pic = (pic or "").strip()
+    if not pic:
+        return ""
+    if pic.startswith("//"):
+        return "https:" + pic
+    if pic.startswith("http"):
+        return pic
+    return ""
+
+
+async def search_videos(
+    keyword: str,
+    *,
+    limit: int = 5,
+    timeout: float = 15.0,
+    page: int = 1,
+    retries: int = 2,
+) -> list[dict[str, Any]]:
+    """按关键词搜 B 站视频，返回候选（标题/BV 号/时长/播放量/UP 主/封面/链接）。
+
+    匿名搜索偶尔会被风控成空结果（code=-412），空的时候隔一秒再试一次。
+    """
+
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return []
+    limit = max(1, min(int(limit), 20))
+    url = SEARCH_API.format(keyword=quote(keyword, safe=""), page=max(1, int(page)), size=limit)
+    client_timeout = aiohttp.ClientTimeout(total=max(5.0, timeout))
+    payload: dict[str, Any] = {}
+    for attempt in range(max(1, int(retries)) + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=client_timeout, trust_env=False) as session:
+                payload = json.loads((await _get(session, url)).decode("utf-8", "ignore"))
+        except (BiliError, ValueError, aiohttp.ClientError, TimeoutError):
+            payload = {}
+        if payload.get("code") in (0, None) and ((payload.get("data") or {}).get("result")):
+            break
+        if attempt < retries:
+            await asyncio.sleep(0.9)
+    if payload.get("code") not in (0, None):
+        return []
+
+    items: list[dict[str, Any]] = []
+    for row in ((payload.get("data") or {}).get("result") or [])[:limit]:
+        bvid = str(row.get("bvid") or "").strip()
+        title = _clean_str(row.get("title") or "")
+        if not bvid or not title:
+            continue
+        items.append(
+            {
+                "bvid": bvid,
+                "title": title,
+                "author": _clean_str(row.get("author") or ""),
+                "duration": str(row.get("duration") or "").strip(),
+                "seconds": _seconds(str(row.get("duration") or "")),
+                "play": int(row.get("play") or 0),
+                "danmaku": int(row.get("video_review") or 0),
+                "cover": _cover_url(str(row.get("pic") or "")),
+                "url": f"https://www.bilibili.com/video/{bvid}",
+                "description": _clean_str(row.get("description") or "")[:160],
+            }
+        )
+    return items
+
+
+async def video_info(bvid: str, *, timeout: float = 15.0) -> dict[str, Any]:
+    """拿单条视频的基础信息（标题/时长/UP 主/封面/aid/cid）。"""
+
+    bvid = extract_bvid(bvid or "") or (bvid or "").strip()
+    if not bvid:
+        return {}
+    client_timeout = aiohttp.ClientTimeout(total=max(5.0, timeout))
+    try:
+        async with aiohttp.ClientSession(timeout=client_timeout, trust_env=False) as session:
+            payload: dict[str, Any] = json.loads(
+                (await _get(session, VIEW_API.format(bvid=bvid))).decode("utf-8", "ignore")
+            )
+    except (BiliError, ValueError, aiohttp.ClientError, TimeoutError):
+        return {}
+    data = payload.get("data") or {}
+    if not data:
+        return {}
+    owner = data.get("owner") or {}
+    return {
+        "bvid": bvid,
+        "aid": int(data.get("aid") or 0),
+        "cid": int(data.get("cid") or 0),
+        "title": _clean_str(data.get("title") or ""),
+        "duration": int(data.get("duration") or 0),
+        "author": _clean_str(owner.get("name") or ""),
+        "cover": _cover_url(str(data.get("pic") or "")),
+        "desc": _clean_str(data.get("desc") or "")[:160],
+        "url": f"https://www.bilibili.com/video/{bvid}",
+    }
+
+
+async def resolve_by_title(title: str, *, timeout: float = 15.0) -> str:
+    """小程序卡片只有标题、没有链接时，用标题反查 BV 号。"""
+
+    title = _clean_str(title or "")
+    if not title:
+        return ""
+    items = await search_videos(title, limit=8, timeout=timeout)
+    if not items:
+        return ""
+
+    def score(item: dict[str, Any]) -> float:
+        name = item["title"]
+        if name == title:
+            return 3.0
+        if name.startswith(title) or title.startswith(name):
+            return 2.0
+        return len(set(title) & set(name)) / max(1, len(set(title)))
+
+    best = max(items, key=score)
+    return best["bvid"] if score(best) >= 0.5 else ""
