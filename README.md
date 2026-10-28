@@ -57,6 +57,10 @@ MaiBot 本身没有 Video 消息组件，适配器把视频段降级成一行文
 
 ## 工作原理
 
+![分镜示例](docs/storyboard-example.jpg)
+
+上图是真实输出：9 格、每格左上角编号、右下角时间戳，顶部一行是文件名 · 分辨率 · 时长 · 有没有声音 · 格数。
+
 ```
 收到消息（Hook: chat.receive.before_process）
    │
